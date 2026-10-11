@@ -65,7 +65,21 @@ const WHO: Record<Principal, string> = {
 const VERB: Record<Operation, string> = { read: "read", insert: "add", update: "edit", delete: "delete" };
 
 function compareOthers(before: AccessResult[], after: AccessResult[], skipKey: string): string[] {
-  const changes: string[] = [];
+  return accessChanges(before, after, skipKey).map((c) => c.text);
+}
+
+export interface AccessChange {
+  targetKey: string;
+  principal: Principal;
+  op: Operation;
+  /** Allowed after the fix. */
+  allowed: boolean;
+  text: string;
+}
+
+/** Every access test whose answer changed, except on `skipKey`. */
+export function accessChanges(before: AccessResult[], after: AccessResult[], skipKey: string | null): AccessChange[] {
+  const changes: AccessChange[] = [];
   for (const old of before) {
     if (old.target.key === skipKey || !old.tested) continue;
     const now = after.find((r) => r.target.key === old.target.key);
@@ -76,9 +90,13 @@ function compareOthers(before: AccessResult[], after: AccessResult[], skipKey: s
         const is = now.access[principal][op];
         if (!was || !is || was.inconclusive || is.inconclusive) continue;
         if (was.allowed !== is.allowed) {
-          changes.push(
-            `${old.target.label}: ${WHO[principal]} ${is.allowed ? "can now" : "can no longer"} ${VERB[op]} rows`,
-          );
+          changes.push({
+            targetKey: old.target.key,
+            principal,
+            op,
+            allowed: is.allowed,
+            text: `${old.target.label}: ${WHO[principal]} ${is.allowed ? "can now" : "can no longer"} ${VERB[op]} rows`,
+          });
         }
       }
     }

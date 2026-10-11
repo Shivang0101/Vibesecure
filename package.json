@@ -1,11 +1,14 @@
 {
   "name": "vibesecure",
-  "version": "0.1.0",
-  "description": "Find and fix Supabase data leaks in AI-built apps (Lovable, Bolt) with an AI agent you approve.",
+  "version": "0.2.0",
+  "description": "Find and fix Supabase data leaks and common attacks (XSS, leaked keys, missing rate limits, injection) in AI-built apps, with an AI agent you approve.",
   "keywords": [
     "supabase",
     "rls",
     "row-level-security",
+    "owasp",
+    "xss",
+    "rate-limiting",
     "postgres",
     "security",
     "lovable",

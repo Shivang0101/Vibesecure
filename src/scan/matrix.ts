@@ -1,6 +1,7 @@
 import type { PGliteInterface } from "@electric-sql/pglite";
 import { errorMessage } from "../db/load.js";
 import { quoteIdent, quoteLiteral } from "../sql/quote.js";
+import { privilegeKind } from "./columns.js";
 import { insertSql, USERS, type SeedReport, type TestUser } from "./seed.js";
 import { whereClause, type Target } from "./targets.js";
 
@@ -46,7 +47,7 @@ function actorFor(principal: Principal, op: Operation): TestUser | null {
  * switched to the `anon` or `authenticated` role, with the JWT claims that
  * auth.uid() reads. Always rolled back, so tests never change the data.
  */
-async function runAs(db: PGliteInterface, actor: TestUser | null, sql: string) {
+export async function runAs(db: PGliteInterface, actor: TestUser | null, sql: string) {
   const role = actor ? "authenticated" : "anon";
   const claims = actor
     ? { sub: actor.id, role: "authenticated", aud: "authenticated", email: actor.email }
@@ -136,12 +137,16 @@ async function attempt(db: PGliteInterface, actor: TestUser | null, op: Operatio
   }
 }
 
-/** A column to "edit" in the update test: an ordinary one, so the edit looks like a real save. */
+/**
+ * A column to "edit" in the update test: an ordinary one, so the edit looks
+ * like a real save. Never a privilege column like `role`: those may be locked
+ * on purpose, and have their own test (escalation.ts).
+ */
 function updateColumn(target: Target): string {
   if (target.kind === "bucket") return "name";
   const { columns, primaryKey } = target.relation;
   const plain = columns.find(
-    (c) => !c.generated && !primaryKey.includes(c.name) && c.name !== target.ownerColumn,
+    (c) => !c.generated && !primaryKey.includes(c.name) && c.name !== target.ownerColumn && privilegeKind(c.name) === null,
   );
   return (plain ?? columns.find((c) => !c.generated) ?? columns[0]!).name;
 }

@@ -36,7 +36,7 @@ describe("finding the leaky policies", () => {
     const intent: Intent = { read: "signed_in", write: "owner" };
     const { leaky, kept } = await findLeakyPolicies(scan.project, target("public.comments"), intent);
     expect(leaky.map((p) => p.name)).toEqual(["Signed-in users can comment"]);
-    expect(kept.map((p) => p.name)).toEqual(["Comments are visible to signed-in users"]);
+    expect(kept.map((p) => p.name)).toEqual(["Admins can delete any comment", "Comments are visible to signed-in users"]);
   });
 
   it("only looks at the policies of the bucket being fixed", async () => {
@@ -135,8 +135,8 @@ describe("saving fixes", () => {
     const dir = scan.project.load.migrationsDir;
     const first = writeMigration(dir, "posts", "select 1;", new Date("2020-01-01T00:00:00Z"));
     const second = writeMigration(dir, "posts", "select 2;", new Date("2020-01-01T00:00:00Z"));
-    expect(first).toMatch(/20260910100001_vibesecure_fix_posts\.sql$/);
-    expect(second).toMatch(/20260910100002_vibesecure_fix_posts\.sql$/);
+    expect(first).toMatch(/20260915120001_vibesecure_fix_posts\.sql$/);
+    expect(second).toMatch(/20260915120002_vibesecure_fix_posts\.sql$/);
   });
 
   it("runs the whole template flow with scripted answers", async () => {

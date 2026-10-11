@@ -6,14 +6,40 @@ export const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", 
 
 export interface Finding {
   severity: Severity;
-  /** Which target this is about, e.g. "public.posts". */
+  /**
+   * What this is about: "public.posts" for a table, "column:public.profiles.role"
+   * for a column, "function:public.f" for a database function, or
+   * "code:<rule>:<file>:<line>" for a problem in the app's source.
+   */
   targetKey: string;
   label: string;
   title: string;
   detail?: string;
-  /** Set on findings that are merged into one line when several tables share them. */
-  code?: "no_api_grants";
+  /** How to fix it, in a sentence or two. */
+  fix?: string;
+  /** Stable id of the check that found it, e.g. "xss-dangerous-html". */
+  rule?: string;
+  /** OWASP Top 10 (2021) category, e.g. "A03 Injection". */
+  owasp?: string;
+  /** Where in the source, for code findings. */
+  location?: { file: string; line: number };
+  /** The line of code, for code findings. */
+  snippet?: string;
+  /** Marks findings that get special handling (merging, or their own fix). */
+  code?: "no_api_grants" | "privilege_escalation";
 }
+
+/** OWASP Top 10 (2021) categories the checks map to. */
+export const OWASP = {
+  accessControl: "A01 Broken Access Control",
+  crypto: "A02 Cryptographic Failures",
+  injection: "A03 Injection",
+  insecureDesign: "A04 Insecure Design",
+  misconfiguration: "A05 Security Misconfiguration",
+  authentication: "A07 Identification and Authentication Failures",
+  integrity: "A08 Software and Data Integrity Failures",
+  ssrf: "A10 Server-Side Request Forgery",
+} as const;
 
 /** Column names that suggest personal or secret data. */
 const SENSITIVE = /(email|phone|address|password|secret|token|api_?key|ssn|birth|dob|salary|iban|card|passport|diagnos|medical|health)/i;
@@ -25,8 +51,12 @@ const SENSITIVE = /(email|phone|address|password|secret|token|api_?key|ssn|birth
  * worded as facts with a hint; anyone changing other people's data is critical.
  */
 export function deriveFindings(results: AccessResult[]): Finding[] {
-  const findings = mergeNoGrants(results.flatMap(findingsFor));
-  return findings.sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
+  return sortFindings(mergeNoGrants(results.flatMap(findingsFor)));
+}
+
+/** Worst first. The sort is stable, so findings of equal severity keep their order. */
+export function sortFindings(findings: Finding[]): Finding[] {
+  return [...findings].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity));
 }
 
 /** One line for all tables without API grants, instead of the same note per table. */
@@ -47,7 +77,15 @@ function findingsFor(result: AccessResult): Finding[] {
   const out: Finding[] = [];
   const add = (severity: Severity, title: string, ...details: (string | undefined)[]) => {
     const detail = details.filter(Boolean).join(" ");
-    out.push({ severity, targetKey: target.key, label: target.label, title, detail: detail || undefined });
+    out.push({
+      severity,
+      targetKey: target.key,
+      label: target.label,
+      title,
+      detail: detail || undefined,
+      rule: "db-access",
+      owasp: OWASP.accessControl,
+    });
     return out[out.length - 1]!;
   };
 
@@ -135,7 +173,14 @@ function findingsFor(result: AccessResult): Finding[] {
     // almost never intended: strangers writing, or anyone deleting everything.
     const anonWrites = anonOps.filter((op) => op !== "read");
     if (anonWrites.length > 0) {
-      add(severityFor(anonWrites, "anon", false), `Anyone on the internet can ${sharedVerbs(anonWrites, target.label)}.`, rlsNote);
+      add(
+        severityFor(anonWrites, "anon", false),
+        `Anyone on the internet can ${sharedVerbs(anonWrites, target.label)}.`,
+        rlsNote,
+        anonWrites.length === 1 && anonWrites[0] === "insert"
+          ? "If that's on purpose (a contact form or waitlist), add a captcha or rate limit: the API has none, so bots can fill it with junk."
+          : undefined,
+      );
     }
     const otherWrites = otherOps.filter((op) => op === "update" || op === "delete");
     if (otherWrites.length > 0) {

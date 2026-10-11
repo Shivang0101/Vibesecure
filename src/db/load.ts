@@ -53,10 +53,13 @@ export function findMigrationFiles(projectDir: string): { dir: string; files: st
       .map((name) => join(dir, name));
     if (files.length > 0) return { dir, files };
   }
-  throw new Error(
+  throw new NoMigrationsError(
     `No migrations found. Expected SQL files in ${join(root, "supabase", "migrations")}.`,
   );
 }
+
+/** The project has no Supabase migrations, so only its code can be checked. */
+export class NoMigrationsError extends Error {}
 
 /** Which loadable extensions the migrations ask for, so we only load those. */
 export function requestedExtensions(sqlTexts: string[]): string[] {

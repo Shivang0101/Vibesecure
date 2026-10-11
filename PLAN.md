@@ -12,6 +12,27 @@ Plan v2 · 2026-10-11 · Small, free, public. Built by one student in about 4 we
 - The Claude fix agent with human approval and a trace log.
 - 40 tests and a leaky example app.
 
+**Added after week 3: common attacks beyond table access** (mapped to the OWASP Top 10).
+- Users promoting themselves through columns like `role` and `plan`. This is tested for real, and `fix --lock` writes column grants.
+- Risky database functions:
+  - `security definer` functions that skip RLS;
+  - SQL injection through `EXECUTE`;
+  - a missing `search_path`.
+- Passwords stored in app tables.
+- Code checks:
+  - XSS;
+  - leaked keys and `VITE_` secrets;
+  - edge functions with no login check or no rate limit on paid APIs;
+  - unsigned payment webhooks;
+  - unverified JWTs;
+  - SSRF;
+  - SQL, filter and command injection;
+  - open redirects;
+  - `Math.random()` tokens;
+  - CORS that echoes any origin;
+  - auth settings in `config.toml`.
+- 98 tests, and a check against real open-source Supabase apps for false alarms.
+
 **Left: week 4.**
 - Try it on 3 real Lovable repos (yours or friends', with permission).
 - Record a GIF for the README.
@@ -19,10 +40,9 @@ Plan v2 · 2026-10-11 · Small, free, public. Built by one student in about 4 we
 - Launch posts and a blog episode.
 
 Also worth adding, only if people use it:
-- Edge function checks.
-- `security definer` functions callable by `anon`.
-- Secrets in the built bundle.
+- Secrets in the built bundle (`dist/`), not just the source.
 - A GitHub Action.
+- Fixes for `security definer` functions (revoking `execute` after asking whether the app calls them).
 
 ## Why this project
 

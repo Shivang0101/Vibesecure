@@ -3,10 +3,12 @@ import { runFixAgent, type AgentOutcome } from "../agent/loop.js";
 import type { ModelClient } from "../agent/model.js";
 import type { SessionState } from "../agent/tools.js";
 import type { Trace } from "../agent/trace.js";
+import type { Escalation } from "../scan/escalation.js";
 import type { ScanResult } from "../scan/index.js";
 import type { Target } from "../scan/targets.js";
 import type { Choice, HumanIO } from "../ui/human.js";
 import { describeAudience, intentProblem, type Audience, type Intent } from "./intent.js";
+import { lockColumnsSql, verifyColumnLock } from "./columns.js";
 import { writeMigration } from "./migration.js";
 import { findLeakyPolicies, templateSql } from "./templates.js";
 import { verifyFix } from "./verify.js";
@@ -62,6 +64,46 @@ export async function fixWithTemplate(
   const save = preset?.autoSave ?? (await human.confirm(`Save this fix as a new migration?`));
   if (!save) return { target, status: "rejected" };
   const file = saveFix(scan, target, sql);
+  human.success(`Saved ${relative(scan.project.projectDir, file)}`);
+  return { target, status: "saved", file };
+}
+
+/**
+ * Locks columns like `role` that users can set on their own rows. There is
+ * nothing to ask (nobody should promote themselves), so it goes straight to
+ * the template, the throwaway-copy checks and the person's approval.
+ */
+export async function lockColumns(
+  scan: ScanResult,
+  target: Target,
+  escalations: Escalation[],
+  human: HumanIO,
+  preset?: { autoSave: boolean },
+): Promise<FixResult> {
+  const sql = lockColumnsSql(target, escalations);
+  human.step("Testing the lock on a throwaway copy of the database");
+  const verification = await verifyColumnLock(scan, target, escalations, sql);
+  const columns = escalations.map((e) => e.column.name);
+
+  human.show(
+    `Lock ${columns.map((c) => `${target.label}.${c}`).join(", ")}`,
+    [
+      sql.trim(),
+      "",
+      "Checked on a throwaway copy:",
+      ...verification.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.label}`),
+      ...verification.notes.map((n) => `! ${n}`),
+      ...verification.sideEffects.map((e) => `✗ ${e}`),
+      ...verification.problems.map((p) => `✗ ${p}`),
+    ].join("\n"),
+  );
+  if (!verification.ok) {
+    return { target, status: "failed", note: `Locking ${columns.join(", ")} didn't pass every check, so nothing was saved.` };
+  }
+
+  const save = preset?.autoSave ?? (await human.confirm("Save this fix as a new migration?"));
+  if (!save) return { target, status: "rejected" };
+  const file = writeMigration(scan.project.load.migrationsDir, `${target.label} ${columns.join(" ")}`, sql);
   human.success(`Saved ${relative(scan.project.projectDir, file)}`);
   return { target, status: "saved", file };
 }

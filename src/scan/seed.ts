@@ -78,8 +78,9 @@ export async function insertSql(
   allTargets: Target[],
   owner: TestUser | null,
   tag: string,
+  overrides: Record<string, string> = {},
 ): Promise<string> {
-  const values = new Map<string, string>();
+  const values = new Map<string, string>(Object.entries(overrides));
 
   if (target.kind === "bucket") {
     const id = owner?.id ?? USERS.A.id;
@@ -90,7 +91,7 @@ export async function insertSql(
     values.set("owner_id", quoteLiteral(id));
   } else {
     for (const column of target.relation.columns) {
-      if (column.generated) continue;
+      if (column.generated || values.has(column.name)) continue;
       if (column.name === target.ownerColumn && owner) {
         values.set(column.name, quoteLiteral(owner.id));
         continue;

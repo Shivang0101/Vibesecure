@@ -1,0 +1,8 @@
+project_id = "leaky-app"
+
+# Webhooks come from Stripe, which has no Supabase login, so verify_jwt is off.
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.ask-ai]
+verify_jwt = false

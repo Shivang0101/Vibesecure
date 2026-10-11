@@ -182,7 +182,11 @@ describe("the fix agent", () => {
 describe("findUsages", () => {
   it("finds supabase-js calls with their chained filters", () => {
     const { matches } = findUsages(projectDir, "posts", "table");
-    expect(matches.map((m) => m.file).sort()).toEqual(["src/pages/MyPosts.tsx", "src/pages/MyPosts.tsx"]);
+    expect(matches.map((m) => m.file).sort()).toEqual([
+      "src/pages/MyPosts.tsx",
+      "src/pages/MyPosts.tsx",
+      "src/pages/Search.tsx",
+    ]);
     expect(matches[0]!.code).toContain('.eq("user_id", user.id)');
   });
 

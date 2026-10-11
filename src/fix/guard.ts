@@ -32,13 +32,22 @@ const NAME = String.raw`(?:"(?:[^"]|"")+"|[a-z_][a-z0-9_$]*)(?:\.(?:"(?:[^"]|"")
 /** End of a name: whitespace, an opening bracket or the end. (\b fails after a closing quote.) */
 const END = String.raw`(?=[\s(]|$)`;
 
+/** "select, update", optionally with column lists: "update (full_name, avatar_url)". */
+function privileges(words: string): string {
+  const one = String.raw`(?:${words})(?: ?\( ?${NAME}(?: ?, ?${NAME})* ?\))?`;
+  return String.raw`${one}(?: ?, ?${one})*`;
+}
+/** Grants are limited to what the verifier tests; revokes can take away anything. */
+const GRANTABLE = privileges("select|insert|update|delete");
+const REVOCABLE = String.raw`(?:all(?: privileges)?|${privileges("select|insert|update|delete|truncate|references|trigger")})`;
+
 const ALLOWED: RegExp[] = [
   new RegExp(String.raw`^alter table (?:only )?(?:if exists )?${NAME} (?:enable|force) row level security$`),
   new RegExp(String.raw`^create policy ${NAME} on ${NAME}${END}`),
   new RegExp(String.raw`^drop policy (?:if exists )?${NAME} on ${NAME}$`),
   new RegExp(String.raw`^alter policy ${NAME} on ${NAME}${END}`),
-  new RegExp(String.raw`^revoke [a-z, ]+ on (?:table )?${NAME} from [a-z_, "]+$`),
-  new RegExp(String.raw`^grant (?:select|insert|update|delete)(?: ?, ?(?:select|insert|update|delete))* on (?:table )?${NAME} to (?:anon|authenticated|service_role)(?: ?, ?(?:anon|authenticated|service_role))*$`),
+  new RegExp(String.raw`^revoke ${REVOCABLE} on (?:table )?${NAME} from [a-z_, "]+$`),
+  new RegExp(String.raw`^grant ${GRANTABLE} on (?:table )?${NAME} to (?:anon|authenticated|service_role)(?: ?, ?(?:anon|authenticated|service_role))*$`),
   new RegExp(String.raw`^alter view (?:if exists )?${NAME} set \( ?security_invoker ?= ?(?:on|true) ?\)$`),
   new RegExp(String.raw`^comment on (?:policy ${NAME} on|table|view) ${NAME} is\b`),
 ];
@@ -49,7 +58,7 @@ function relationIn(lower: string): string | null {
     new RegExp(String.raw`^alter table (?:only )?(?:if exists )?(${NAME})`),
     new RegExp(String.raw`^(?:create|alter) policy ${NAME} on (${NAME})`),
     new RegExp(String.raw`^drop policy (?:if exists )?${NAME} on (${NAME})`),
-    new RegExp(String.raw`^(?:revoke|grant) [a-z, ]+ on (?:table )?(${NAME})`),
+    new RegExp(String.raw`^(?:revoke|grant) ${REVOCABLE} on (?:table )?(${NAME})`),
     new RegExp(String.raw`^alter view (?:if exists )?(${NAME})`),
     new RegExp(String.raw`^comment on policy ${NAME} on (${NAME})`),
     new RegExp(String.raw`^comment on (?:table|view) (${NAME})`),
