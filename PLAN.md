@@ -4,6 +4,26 @@ An open-source AI agent that finds data leaks in Supabase apps built with Lovabl
 
 Plan v2 · 2026-10-11 · Small, free, public. Built by one student in about 4 weeks.
 
+## Status (2026-10-11)
+
+**Built: weeks 1–3.**
+- `scan` runs offline with PGlite.
+- Plain-English findings, fix templates, and a verifier that also catches side effects on other tables.
+- The Claude fix agent with human approval and a trace log.
+- 40 tests and a leaky example app.
+
+**Left: week 4.**
+- Try it on 3 real Lovable repos (yours or friends', with permission).
+- Record a GIF for the README.
+- `npm publish`.
+- Launch posts and a blog episode.
+
+Also worth adding, only if people use it:
+- Edge function checks.
+- `security definer` functions callable by `anon`.
+- Secrets in the built bundle.
+- A GitHub Action.
+
 ## Why this project
 
 - **The problem is real and easy to explain.** AI app builders often ship databases that anyone can read. In 2025, 170+ Lovable apps leaked data through policies that let anyone in (CVE-2025-48757). In 2026, Moltbook exposed 1.5M API keys because row-level security (RLS) was missing.

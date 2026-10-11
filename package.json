@@ -1,0 +1,57 @@
+{
+  "name": "vibesecure",
+  "version": "0.1.0",
+  "description": "Find and fix Supabase data leaks in AI-built apps (Lovable, Bolt) with an AI agent you approve.",
+  "keywords": [
+    "supabase",
+    "rls",
+    "row-level-security",
+    "postgres",
+    "security",
+    "lovable",
+    "bolt",
+    "vibe-coding",
+    "ai-agent",
+    "claude"
+  ],
+  "license": "MIT",
+  "author": "Shivang0101",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shivang0101/Vibesecure.git"
+  },
+  "type": "module",
+  "bin": {
+    "vibesecure": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "@clack/prompts": "^1.8.1",
+    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite-pgvector": "0.0.9",
+    "picocolors": "^1.1.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

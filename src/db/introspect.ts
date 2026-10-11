@@ -1,0 +1,364 @@
+import type { PGliteInterface } from "@electric-sql/pglite";
+
+export interface ColumnInfo {
+  name: string;
+  /** Declared type, e.g. "character varying(255)", "vector(1536)", "text[]". */
+  type: string;
+  /** For domains, the underlying type; otherwise the same as `type`. */
+  baseType: string;
+  /** Postgres type category: S string, N numeric, B boolean, D date/time, A array, U user-defined... */
+  category: string;
+  enumLabels: string[];
+  /** Allowed values when a CHECK constraint limits the column to a fixed list. */
+  allowedValues: string[];
+  notNull: boolean;
+  hasDefault: boolean;
+  /** Generated or identity-always columns can't be written to. */
+  generated: boolean;
+}
+
+export interface ForeignKey {
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+}
+
+export interface PolicyInfo {
+  name: string;
+  command: "ALL" | "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+  roles: string[];
+  using: string | null;
+  withCheck: string | null;
+  permissive: boolean;
+}
+
+export interface RelationInfo {
+  schema: string;
+  name: string;
+  kind: "table" | "view";
+  rlsEnabled: boolean;
+  /** Views only: true when created with security_invoker, so RLS of the tables underneath applies. */
+  securityInvoker: boolean;
+  columns: ColumnInfo[];
+  foreignKeys: ForeignKey[];
+  policies: PolicyInfo[];
+  primaryKey: string[];
+  /** Table privileges the API roles have (select, insert, update, delete). */
+  grants: { anon: string[]; authenticated: string[] };
+  /** The column that says which user a row belongs to, if we can tell. */
+  ownerColumn: string | null;
+  ownerReason: string | null;
+}
+
+export interface BucketInfo {
+  id: string;
+  name: string;
+  public: boolean;
+}
+
+export interface SchemaInfo {
+  relations: RelationInfo[];
+  /** storage.objects, which holds the files of every bucket. */
+  storageObjects: RelationInfo | null;
+  buckets: BucketInfo[];
+}
+
+/** Column names that usually mean "the user this row belongs to", best first. */
+const OWNER_NAMES = ["user_id", "owner_id", "created_by", "author_id", "creator_id", "profile_id", "account_id", "uid"];
+
+/** Reads tables, views, columns, keys and policies from the database catalog. */
+export async function introspect(db: PGliteInterface, schemas: string[]): Promise<SchemaInfo> {
+  const relationRows = await rows<{
+    oid: number;
+    schema: string;
+    name: string;
+    relkind: string;
+    rls: boolean;
+    security_invoker: boolean;
+    anon_grants: string[];
+    authenticated_grants: string[];
+  }>(
+    db,
+    `select c.oid::int as oid, n.nspname as schema, c.relname as name, c.relkind::text as relkind,
+            c.relrowsecurity as rls,
+            exists (
+              select 1 from pg_options_to_table(c.reloptions) o
+              where o.option_name = 'security_invoker' and lower(o.option_value) in ('true', 'on', '1', 'yes')
+            ) as security_invoker,
+            array(select p from unnest(array['select', 'insert', 'update', 'delete']) p
+                   where has_table_privilege('anon', c.oid, p)) as anon_grants,
+            array(select p from unnest(array['select', 'insert', 'update', 'delete']) p
+                   where has_table_privilege('authenticated', c.oid, p)) as authenticated_grants
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where (n.nspname = any($1::text[]) and c.relkind in ('r', 'p', 'v', 'm'))
+         or (n.nspname = 'storage' and c.relname = 'objects')
+      order by n.nspname, c.relname`,
+    [schemas],
+  );
+
+  const oids = relationRows.map((r) => r.oid);
+  const [columns, foreignKeys, checks, primaryKeys, policies, buckets] = await Promise.all([
+    readColumns(db, oids),
+    readForeignKeys(db, oids),
+    readCheckConstraints(db, oids),
+    readPrimaryKeys(db, oids),
+    readPolicies(db, schemas),
+    rows<BucketInfo>(db, `select id, name, coalesce(public, false) as public from storage.buckets order by id`),
+  ]);
+
+  const relations: RelationInfo[] = relationRows.map((r) => {
+    const cols = (columns.get(r.oid) ?? []).map((c) => ({
+      ...c,
+      allowedValues: checks.get(r.oid)?.get(c.name) ?? [],
+    }));
+    return {
+      schema: r.schema,
+      name: r.name,
+      kind: r.relkind === "v" || r.relkind === "m" ? "view" : "table",
+      rlsEnabled: r.rls,
+      securityInvoker: r.security_invoker,
+      columns: cols,
+      foreignKeys: foreignKeys.get(r.oid) ?? [],
+      policies: policies.get(`${r.schema}.${r.name}`) ?? [],
+      primaryKey: primaryKeys.get(r.oid) ?? [],
+      grants: { anon: r.anon_grants, authenticated: r.authenticated_grants },
+      ownerColumn: null,
+      ownerReason: null,
+    };
+  });
+
+  inferOwnerColumns(relations);
+
+  const storageObjects = relations.find((r) => r.schema === "storage" && r.name === "objects") ?? null;
+  if (storageObjects) {
+    storageObjects.ownerColumn = "owner";
+    storageObjects.ownerReason = "storage files record their uploader in the owner column";
+  }
+
+  return {
+    relations: relations.filter((r) => r !== storageObjects),
+    storageObjects,
+    buckets,
+  };
+}
+
+/**
+ * Works out the owner column of each relation:
+ *  1. a column with a foreign key to auth.users (profiles.id, posts.user_id)
+ *  2. a foreign key to a table whose own key is a user id (profile_id -> profiles.id)
+ *  3. a uuid column named like an owner (user_id, owner_id, ...), common in views
+ */
+function inferOwnerColumns(relations: RelationInfo[]): void {
+  for (const rel of relations) {
+    const userRefs = rel.foreignKeys
+      .filter((fk) => fk.refSchema === "auth" && fk.refTable === "users" && fk.columns.length === 1)
+      .map((fk) => fk.columns[0]!);
+    const chosen = pickByOwnerName(userRefs);
+    if (chosen) {
+      rel.ownerColumn = chosen;
+      rel.ownerReason = `${chosen} references auth.users`;
+    }
+  }
+
+  const byName = new Map(relations.map((r) => [`${r.schema}.${r.name}`, r]));
+  for (const rel of relations) {
+    if (rel.ownerColumn) continue;
+    const viaUserTable = rel.foreignKeys
+      .filter((fk) => {
+        if (fk.columns.length !== 1) return false;
+        const target = byName.get(`${fk.refSchema}.${fk.refTable}`);
+        return (
+          target?.ownerColumn !== undefined &&
+          target.ownerColumn !== null &&
+          target.primaryKey.length === 1 &&
+          target.primaryKey[0] === target.ownerColumn &&
+          fk.refColumns[0] === target.ownerColumn
+        );
+      })
+      .map((fk) => fk.columns[0]!);
+    const chosen = pickByOwnerName(viaUserTable);
+    if (chosen) {
+      const fk = rel.foreignKeys.find((f) => f.columns[0] === chosen)!;
+      rel.ownerColumn = chosen;
+      rel.ownerReason = `${chosen} references ${fk.refTable}, whose id is the user's id`;
+    }
+  }
+
+  for (const rel of relations) {
+    if (rel.ownerColumn) continue;
+    const named = rel.columns.find((c) => c.baseType === "uuid" && OWNER_NAMES.includes(c.name));
+    if (named) {
+      rel.ownerColumn = named.name;
+      rel.ownerReason = `${named.name} is named like an owner column`;
+    }
+  }
+}
+
+function pickByOwnerName(candidates: string[]): string | null {
+  if (candidates.length === 0) return null;
+  for (const name of OWNER_NAMES) {
+    if (candidates.includes(name)) return name;
+  }
+  return candidates[0]!;
+}
+
+async function readColumns(db: PGliteInterface, oids: number[]): Promise<Map<number, Omit<ColumnInfo, "allowedValues">[]>> {
+  const result = await rows<{
+    relid: number;
+    name: string;
+    type: string;
+    base_type: string;
+    category: string;
+    enum_labels: string[];
+    not_null: boolean;
+    has_default: boolean;
+    generated: boolean;
+  }>(
+    db,
+    `select a.attrelid::int as relid, a.attname as name,
+            format_type(a.atttypid, a.atttypmod) as type,
+            format_type(bt.oid, case when t.typtype = 'd' then t.typtypmod else a.atttypmod end) as base_type,
+            bt.typcategory::text as category,
+            array(select e.enumlabel::text from pg_enum e where e.enumtypid = bt.oid order by e.enumsortorder) as enum_labels,
+            a.attnotnull as not_null,
+            a.atthasdef as has_default,
+            (a.attgenerated <> '' or a.attidentity = 'a') as generated
+       from pg_attribute a
+       join pg_type t on t.oid = a.atttypid
+       join pg_type bt on bt.oid = case when t.typtype = 'd' then t.typbasetype else t.oid end
+      where a.attrelid = any($1::oid[]) and a.attnum > 0 and not a.attisdropped
+      order by a.attrelid, a.attnum`,
+    [oids],
+  );
+  const byRelation = new Map<number, Omit<ColumnInfo, "allowedValues">[]>();
+  for (const c of result) {
+    const list = byRelation.get(c.relid) ?? [];
+    list.push({
+      name: c.name,
+      type: c.type,
+      baseType: c.base_type,
+      category: c.category,
+      enumLabels: c.enum_labels,
+      notNull: c.not_null,
+      hasDefault: c.has_default,
+      generated: c.generated,
+    });
+    byRelation.set(c.relid, list);
+  }
+  return byRelation;
+}
+
+async function readForeignKeys(db: PGliteInterface, oids: number[]): Promise<Map<number, ForeignKey[]>> {
+  const result = await rows<{
+    relid: number;
+    ref_schema: string;
+    ref_table: string;
+    columns: string[];
+    ref_columns: string[];
+  }>(
+    db,
+    `select con.conrelid::int as relid, rn.nspname as ref_schema, rc.relname as ref_table,
+            array_agg(a.attname::text order by k.ord) as columns,
+            array_agg(ra.attname::text order by k.ord) as ref_columns
+       from pg_constraint con
+       join lateral unnest(con.conkey, con.confkey) with ordinality as k(attnum, ref_attnum, ord) on true
+       join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum
+       join pg_attribute ra on ra.attrelid = con.confrelid and ra.attnum = k.ref_attnum
+       join pg_class rc on rc.oid = con.confrelid
+       join pg_namespace rn on rn.oid = rc.relnamespace
+      where con.contype = 'f' and con.conrelid = any($1::oid[])
+      group by con.oid, con.conrelid, rn.nspname, rc.relname`,
+    [oids],
+  );
+  const byRelation = new Map<number, ForeignKey[]>();
+  for (const fk of result) {
+    const list = byRelation.get(fk.relid) ?? [];
+    list.push({ columns: fk.columns, refSchema: fk.ref_schema, refTable: fk.ref_table, refColumns: fk.ref_columns });
+    byRelation.set(fk.relid, list);
+  }
+  return byRelation;
+}
+
+async function readPrimaryKeys(db: PGliteInterface, oids: number[]): Promise<Map<number, string[]>> {
+  const result = await rows<{ relid: number; columns: string[] }>(
+    db,
+    `select con.conrelid::int as relid,
+            array(select a.attname::text from unnest(con.conkey) with ordinality k(attnum, ord)
+                    join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum
+                   order by k.ord) as columns
+       from pg_constraint con
+      where con.contype = 'p' and con.conrelid = any($1::oid[])`,
+    [oids],
+  );
+  return new Map(result.map((r) => [r.relid, r.columns]));
+}
+
+/**
+ * Postgres stores `check (status in ('draft', 'published'))` as
+ * `CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text])))`.
+ * We pull out the allowed values so test rows can satisfy the check.
+ */
+async function readCheckConstraints(db: PGliteInterface, oids: number[]): Promise<Map<number, Map<string, string[]>>> {
+  const result = await rows<{ relid: number; def: string }>(
+    db,
+    `select con.conrelid::int as relid, pg_get_constraintdef(con.oid) as def
+       from pg_constraint con
+      where con.contype = 'c' and con.conrelid = any($1::oid[])`,
+    [oids],
+  );
+  const byRelation = new Map<number, Map<string, string[]>>();
+  const pattern = /\(*"?([A-Za-z_][A-Za-z0-9_]*)"?\)*(?:::[A-Za-z ]+)?\s*=\s*ANY\s*\(+ARRAY\[(.*?)\]/g;
+  for (const { relid, def } of result) {
+    for (const match of def.matchAll(pattern)) {
+      const values = [...match[2]!.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1]!.replace(/''/g, "'"));
+      if (values.length === 0) continue;
+      const columns = byRelation.get(relid) ?? new Map<string, string[]>();
+      columns.set(match[1]!, values);
+      byRelation.set(relid, columns);
+    }
+  }
+  return byRelation;
+}
+
+async function readPolicies(db: PGliteInterface, schemas: string[]): Promise<Map<string, PolicyInfo[]>> {
+  const result = await rows<{
+    schema: string;
+    table: string;
+    name: string;
+    permissive: string;
+    roles: string[];
+    cmd: PolicyInfo["command"];
+    qual: string | null;
+    with_check: string | null;
+  }>(
+    db,
+    `select schemaname::text as schema, tablename::text as table, policyname::text as name,
+            permissive, roles::text[] as roles, cmd, qual, with_check
+       from pg_policies
+      where schemaname = any($1::text[]) or (schemaname = 'storage' and tablename = 'objects')
+      order by schemaname, tablename, policyname`,
+    [schemas],
+  );
+  const byRelation = new Map<string, PolicyInfo[]>();
+  for (const p of result) {
+    const key = `${p.schema}.${p.table}`;
+    const list = byRelation.get(key) ?? [];
+    list.push({
+      name: p.name,
+      command: p.cmd,
+      roles: p.roles,
+      using: p.qual,
+      withCheck: p.with_check,
+      permissive: p.permissive === "PERMISSIVE",
+    });
+    byRelation.set(key, list);
+  }
+  return byRelation;
+}
+
+async function rows<T>(db: PGliteInterface, sql: string, params: unknown[] = []): Promise<T[]> {
+  const result = await db.query<T>(sql, params);
+  return result.rows;
+}
